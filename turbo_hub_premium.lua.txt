@@ -1,0 +1,2874 @@
+local SOURCE_URL = "https://raw.githubusercontent.com/LostMorality/RScripts/main/hunt_roblox20.lua"
+local LOCAL_FILE = "hunt_roblox20.lua"
+
+local CHANGELOG = {
+	{
+		date = "2026-09-18",
+		title = "Island 6 - Natural Disaster Survival",
+		items = {
+			"Added Auto rescue animals: grabs one free animal at a time and skips animals other players are holding.",
+			"Waits in the lobby at the pen and drops the animal off once the round ends.",
+			"Animal ESP: green = free, red = held by someone, blue = yours.",
+			"Live rescued counter, badge status and Return to hub.",
+		},
+	},
+	{
+		date = "2026-09-18",
+		title = "Hub - UGC auto-claim",
+		items = {
+			"Claiming no longer spams teleports: stands still at the pedestal and backs off when the server says to try again.",
+			"Finds pedestals that are not streamed in yet.",
+			"Added this Changelog tab.",
+		},
+	},
+	{
+		date = "2026-09-17",
+		title = "Islands 1-5",
+		items = {
+			"KO tracker, player ESP and Return to hub for Crossroads, Rocket Arena and Chaos Canyon.",
+			"Sword ESP for Sword Fights on the Heights IV.",
+			"Auto-claim skips UGC you already claimed.",
+		},
+	},
+}
+
+local function addChangelogTab(Window)
+	local tab = Window:AddTab("Changelog")
+	for idx, entry in CHANGELOG do
+		local box = (idx % 2 == 1) and tab:AddLeftGroupbox(entry.date) or tab:AddRightGroupbox(entry.date)
+		box:AddLabel(entry.title, true)
+		box:AddDivider()
+		for _, line in entry.items do
+			box:AddLabel("- " .. line, true)
+		end
+	end
+end
+
+local HUB_PLACE = 74205509034203
+local HEIGHTS_PLACE = 47324
+local NDS_PLACE = 189707
+local BRICKBATTLE_PLACES = { [1818] = true, [25415] = true, [14403] = true }
+
+local HUNT_QUEUE_SOURCE
+if SOURCE_URL ~= "" then
+	HUNT_QUEUE_SOURCE = 'pcall(function() loadstring(game:HttpGet("' .. SOURCE_URL .. '"))() end)'
+else
+	HUNT_QUEUE_SOURCE = 'pcall(function() loadstring(readfile("' .. LOCAL_FILE .. '"))() end)'
+end
+
+do
+	local G = getgenv()
+	local queue = queue_on_teleport or queueonteleport
+	if queue and not G.HUNT_AUTOLOAD_QUEUED then
+		G.HUNT_AUTOLOAD_QUEUED = true
+		queue(HUNT_QUEUE_SOURCE)
+	end
+end
+
+repeat
+	task.wait()
+until game:IsLoaded()
+
+do
+	local G = getgenv()
+	if G.HUNT_RUN_JOB == game.JobId and G.HUNT_RUN_PLACE == game.PlaceId and not G.HUNT_FORCE_RELOAD then
+		return
+	end
+	G.HUNT_RUN_JOB = game.JobId
+	G.HUNT_RUN_PLACE = game.PlaceId
+	G.HUNT_FORCE_RELOAD = nil
+end
+
+local function runHub()
+	local Players = game:GetService("Players")
+	local CollectionService = game:GetService("CollectionService")
+	local HttpService = game:GetService("HttpService")
+	local RunService = game:GetService("RunService")
+	local BadgeService = game:GetService("BadgeService")
+
+	local LocalPlayer = Players.LocalPlayer
+
+	repeat
+		task.wait()
+	until game:IsLoaded()
+
+	local Remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
+	local YearFolders = workspace:WaitForChild("YearFolders")
+	local QuestActivities = require(game:GetService("ReplicatedStorage").Config.QuestActivities)
+	local QuestTagPrefixes = require(game:GetService("ReplicatedStorage").Config.QuestTagPrefixes)
+	local ATT = QuestTagPrefixes.ATT_PREFIX
+
+	local G = getgenv()
+	G.HUNT_STOP = false
+	G.HUNT_LOG = {}
+
+	G.HUNT_REWARD_INFO = G.HUNT_REWARD_INFO or {}
+	G.HUNT_HAS_BADGE = G.HUNT_HAS_BADGE or {}
+	G.HUNT_CLAIMED = G.HUNT_CLAIMED or {}
+
+	local CLAIM_FILE = "hunt20_claimed_" .. LocalPlayer.UserId .. ".json"
+	pcall(function()
+		if isfile and isfile(CLAIM_FILE) then
+			for k, v in HttpService:JSONDecode(readfile(CLAIM_FILE)) do
+				if v then
+					G.HUNT_CLAIMED[tonumber(k)] = true
+				end
+			end
+		end
+	end)
+
+	local function markClaimed(i)
+		G.HUNT_CLAIMED[i] = true
+		pcall(function()
+			if writefile then
+				local out = {}
+				for k, v in G.HUNT_CLAIMED do
+					if v then
+						out[tostring(k)] = true
+					end
+				end
+				writefile(CLAIM_FILE, HttpService:JSONEncode(out))
+			end
+		end)
+	end
+	local function log(...)
+		local parts = {}
+		for _, v in { ... } do
+			parts[#parts + 1] = tostring(v)
+		end
+		local line = table.concat(parts, " ")
+		table.insert(G.HUNT_LOG, line)
+		if #G.HUNT_LOG > 200 then
+			table.remove(G.HUNT_LOG, 1)
+		end
+		if Library and Library.Notify then
+			pcall(function()
+				Library:Notify(line, 3)
+			end)
+		end
+	end
+
+	local function comma(n)
+		n = tostring(math.floor(tonumber(n) or 0))
+		local sign = ""
+		if n:sub(1, 1) == "-" then
+			sign = "-"
+			n = n:sub(2)
+		end
+		local out = n:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+		out = out:gsub("^,", "")
+		return sign .. out
+	end
+
+	local COORDS = {
+		[1] = Vector3.new(-26, 6, 321),
+		[2] = Vector3.new(-699, 6, 300),
+		[3] = Vector3.new(-1421, 6, 350),
+		[4] = Vector3.new(-2100, 46, 325),
+		[5] = Vector3.new(-2800, 10, 300),
+		[6] = Vector3.new(-3599, 7, 103),
+		[7] = Vector3.new(-4252, 26, 447),
+		[8] = Vector3.new(-4929, -20, 536),
+		[9] = Vector3.new(-5584, 34, 74),
+		[10] = Vector3.new(-6221, 17, 260),
+		[11] = Vector3.new(-7013, 5, -1),
+		[12] = Vector3.new(-7872, 15, -62),
+		[13] = Vector3.new(-8510, 5, -65),
+		[14] = Vector3.new(-9104, 4, 370),
+		[15] = Vector3.new(-9580, 1, 214),
+		[16] = Vector3.new(-10452, 5, 268),
+		[17] = Vector3.new(-11108, 3, 392),
+		[18] = Vector3.new(-11810, 8, 176),
+		[19] = Vector3.new(-12599, 19, 136),
+		[20] = Vector3.new(-13403, 7, 239),
+	}
+
+	local ISLANDS = {}
+	for i = 1, 20 do
+		local cfg = QuestActivities["Island" .. i]
+		if cfg then
+			ISLANDS[i] = {
+				n = i,
+				label = cfg.HudLabel or ("Island " .. i),
+				count = cfg.Count or 1,
+				activity = cfg.Activity,
+				spawnTag = cfg.SpawnTag,
+				reward = cfg.RewardTool or "-",
+				startFlag = cfg.StartFlag,
+				progressFlag = cfg.ProgressFlag,
+				turnInFlag = cfg.TurnInFlag,
+				pos = COORDS[i],
+			}
+		end
+	end
+
+	local function attr(flag)
+		return LocalPlayer:GetAttribute(ATT .. flag) or 0
+	end
+
+	local function getSession()
+		local raw = LocalPlayer:GetAttribute("ActivitySession")
+		if not raw then
+			return nil
+		end
+		local ok, decoded = pcall(function()
+			return HttpService:JSONDecode(raw)
+		end)
+		return ok and decoded or nil
+	end
+
+	local function hrpNow()
+		local char = LocalPlayer.Character
+		return char and char:FindFirstChild("HumanoidRootPart")
+	end
+
+	local function teleport(pos, settle)
+		local char = LocalPlayer.Character
+		if not char then
+			return false
+		end
+		char:PivotTo(CFrame.new(pos + Vector3.new(0, 5, 0)))
+		local t0 = os.clock()
+		repeat
+			task.wait(0.2)
+			local hrp = hrpNow()
+			if hrp then
+				if (hrp.Position - pos).Magnitude <= 25 then
+					if settle then
+						task.wait(settle)
+					end
+					return true
+				end
+				char:PivotTo(CFrame.new(pos + Vector3.new(0, 5, 0)))
+			end
+		until os.clock() - t0 > 5 or G.HUNT_STOP
+		return true
+	end
+
+	local function tp(pos)
+		return teleport(pos, 0.3)
+	end
+
+	local function findNpc(year)
+		for _, c in year:GetChildren() do
+			local ir = c:FindFirstChild("Interact")
+			if ir and ir:IsA("RemoteEvent") then
+				return ir, c
+			end
+		end
+		return nil
+	end
+
+	local function arrive(isl)
+		local key = "Year_" .. string.format("%02d", isl.n)
+		tp(isl.pos)
+		local year, npc
+		local t0 = os.clock()
+		repeat
+			year = YearFolders:FindFirstChild(key)
+			if year then
+				npc = findNpc(year)
+			end
+			if not npc then
+				task.wait(0.25)
+			end
+		until npc or os.clock() - t0 > 6 or G.HUNT_STOP
+		return npc, year
+	end
+
+	local function npcWorldPos(ir)
+		local model = ir and ir.Parent
+		if not model then
+			return nil
+		end
+		if model:IsA("Model") then
+			return model:GetPivot().Position
+		elseif model:IsA("BasePart") then
+			return model.Position
+		end
+		return nil
+	end
+
+	local function gotoNpc(ir)
+		local pos = npcWorldPos(ir)
+		if not pos then
+			return
+		end
+		teleport(pos + Vector3.new(0, 0, 4), 0.6)
+	end
+
+	local function startQuest(isl, npc)
+		if attr(isl.turnInFlag) >= 1 then
+			return true
+		end
+		if npc then
+			gotoNpc(npc)
+			npc:FireServer("accept")
+			task.wait(0.35)
+			npc:FireServer("start")
+		end
+		local t0 = os.clock()
+		repeat
+			task.wait(0.2)
+		until getSession() or attr(isl.startFlag) >= 1 or os.clock() - t0 > 4 or G.HUNT_STOP
+		return attr(isl.startFlag) >= 1 or getSession() ~= nil
+	end
+
+	local function taggedPos(pt)
+		if not pt:IsDescendantOf(workspace) then
+			return nil
+		end
+		local ok, pos = pcall(function()
+			return (pt:IsA("Model") and pt:GetPivot().Position) or pt.Position
+		end)
+		return ok and pos or nil
+	end
+
+	local function partPresent(tag, id)
+		for _, pt in CollectionService:GetTagged(tag) do
+			if pt:GetAttribute("ID") == id and pt:IsDescendantOf(workspace) then
+				return pt
+			end
+		end
+		return nil
+	end
+
+	local function parsePos(id)
+		local x, y, z = tostring(id):match("(-?%d+%.?%d*)_(-?%d+%.?%d*)_(-?%d+%.?%d*)")
+		if x then
+			return Vector3.new(tonumber(x), tonumber(y), tonumber(z))
+		end
+		return nil
+	end
+
+	local function gotoPos(target)
+		return teleport(target, 0.15)
+	end
+
+	local function resolveTarget(isl, id)
+		local target = parsePos(id)
+		if target then
+			return target
+		end
+		local pt = partPresent(isl.spawnTag, id)
+		if not pt then
+			teleport(isl.pos, 0.3)
+			pt = partPresent(isl.spawnTag, id)
+		end
+		if pt then
+			return taggedPos(pt)
+		end
+		return nil
+	end
+
+	local function doPickup(isl)
+		local remote = Remotes:FindFirstChild("PickupMinigameCollect")
+		if not remote then
+			return
+		end
+		for pass = 1, 3 do
+			if G.HUNT_STOP then
+				return
+			end
+			local session = getSession()
+			if not session or not session.SpawnIds then
+				return
+			end
+			local anyLeft = false
+			for _, id in ipairs(session.SpawnIds) do
+				if G.HUNT_STOP then
+					return
+				end
+				if not session.Collected[id] then
+					local target = resolveTarget(isl, id)
+					if target then
+						gotoPos(target)
+						task.wait(0.2)
+						remote:FireServer(tostring(id))
+						task.wait(0.35)
+						session = getSession() or session
+						if not session.Collected[id] then
+							anyLeft = true
+						end
+					else
+						anyLeft = true
+					end
+				end
+			end
+			if attr(isl.progressFlag) >= isl.count or not anyLeft then
+				return
+			end
+		end
+	end
+
+	local function doIsland2(isl)
+		local ev = Remotes:FindFirstChild("Island2ButtonPress")
+		if not ev then
+			return
+		end
+		for pass = 1, 3 do
+			if attr(isl.progressFlag) >= isl.count or G.HUNT_STOP then
+				return
+			end
+			for _, pt in CollectionService:GetTagged("Island2Button") do
+				if G.HUNT_STOP then
+					return
+				end
+				teleport(taggedPos(pt), 0.2)
+				ev:FireServer(pt)
+				task.wait(0.3)
+			end
+		end
+	end
+
+	local function doIsland3(isl)
+		local ev = Remotes:FindFirstChild("PaintballMinigame")
+		if not ev then
+			return
+		end
+		for pass = 1, 4 do
+			if attr(isl.progressFlag) >= isl.count or G.HUNT_STOP then
+				return
+			end
+			local session = getSession()
+			local targets = session and session.TargetEggIds
+			if not targets then
+				return
+			end
+			for _, id in ipairs(targets) do
+				if G.HUNT_STOP then
+					return
+				end
+				local painted = session.PaintedEggIds and session.PaintedEggIds[id]
+				if not painted then
+					local pt
+					for _, egg in CollectionService:GetTagged("PaintableEgg") do
+						if tostring(egg:GetAttribute("Id")) == tostring(id) then
+							pt = egg
+							break
+						end
+					end
+					if pt then
+						teleport(taggedPos(pt), 0.2)
+						ev:FireServer(tostring(id))
+						task.wait(0.3)
+					end
+				end
+			end
+			task.wait(0.3)
+		end
+	end
+
+	local function doIsland4(isl)
+		local pt = CollectionService:GetTagged("Island4TornadoPath")[1]
+		if not pt then
+			return
+		end
+		local pos = taggedPos(pt)
+		local t0 = os.clock()
+		while os.clock() - t0 < 34 and attr(isl.progressFlag) < isl.count and not G.HUNT_STOP do
+			local char = LocalPlayer.Character
+			if char then
+				char:PivotTo(CFrame.new(pos + Vector3.new(0, 3, 0)))
+			end
+			task.wait(0.4)
+		end
+	end
+
+	local function doIsland5(isl)
+		local collectEv = Remotes:FindFirstChild("Island5PizzaCollect")
+		local placeEv = Remotes:FindFirstChild("Island5PizzaPlace")
+		if not collectEv or not placeEv then
+			return
+		end
+		local session = getSession()
+		if not session or not session.Pieces then
+			return
+		end
+		for id in pairs(session.Pieces) do
+			if G.HUNT_STOP then
+				return
+			end
+			local pos = parsePos(id)
+			if pos then
+				gotoPos(pos)
+				collectEv:FireServer(id)
+				task.wait(0.3)
+			end
+		end
+		task.wait(0.2)
+		local podium = CollectionService:GetTagged("PizzaPodium")[1]
+		if podium then
+			teleport(taggedPos(podium), 0.2)
+		end
+		placeEv:FireServer()
+		task.wait(0.4)
+	end
+
+	local function doIsland6(isl)
+		local t0 = os.clock()
+		while attr(isl.progressFlag) < isl.count and os.clock() - t0 < isl.count + 6 and not G.HUNT_STOP do
+			task.wait(0.5)
+		end
+	end
+
+	local function doIsland7(isl)
+		local ev = Remotes:FindFirstChild("Island7FlagGrab")
+		local pt = CollectionService:GetTagged("Island7FlagModel")[1]
+		if not ev or not pt then
+			return
+		end
+		teleport(taggedPos(pt), 0.2)
+		ev:FireServer()
+		task.wait(0.4)
+	end
+
+	local function doIsland8(isl)
+		local ev = Remotes:FindFirstChild("SurvivalKitMinigame")
+		if not ev then
+			return
+		end
+		for _, pt in CollectionService:GetTagged("SurvivalKitItem") do
+			if attr(isl.progressFlag) >= isl.count or G.HUNT_STOP then
+				return
+			end
+			teleport(taggedPos(pt), 0.2)
+			ev:FireServer(pt)
+			task.wait(0.3)
+		end
+	end
+
+	local function doIsland9(isl)
+		local goal = CollectionService:GetTagged("SpeedrunGoal")[1]
+		local ev = Remotes:FindFirstChild("SpeedrunMinigame")
+		if not goal or not ev then
+			return
+		end
+		teleport(goal.Position, 0.3)
+		local hrp = hrpNow()
+		if hrp and typeof(firetouchinterest) == "function" then
+			pcall(firetouchinterest, hrp, goal, 0)
+			task.wait(0.1)
+			pcall(firetouchinterest, hrp, goal, 1)
+		end
+		ev:FireServer(goal, goal.Position, workspace:GetServerTimeNow())
+		task.wait(0.6)
+	end
+
+	local function doIsland10(isl)
+		local ev = Remotes:FindFirstChild("Island10Drop")
+		local btn = CollectionService:GetTagged("Island10Button")[1]
+		if not ev or not btn then
+			return
+		end
+		teleport(taggedPos(btn), 0.2)
+		ev:FireServer()
+		local t0 = os.clock()
+		while attr(isl.progressFlag) < isl.count and os.clock() - t0 < 10 and not G.HUNT_STOP do
+			task.wait(0.3)
+		end
+	end
+
+	local function doIsland11(isl)
+		local ev = Remotes:FindFirstChild("Island11ButtonPress")
+		local btn = CollectionService:GetTagged("Island11Button")[1]
+		if not ev or not btn then
+			return
+		end
+		teleport(taggedPos(btn), 0.2)
+		for i = 1, 90 do
+			if attr(isl.progressFlag) >= isl.count or G.HUNT_STOP then
+				return
+			end
+			local session = getSession()
+			if not session then
+				return
+			end
+			if (session.Balance or 0) < (session.ClickCost or math.huge) and (session.Balance or 0) <= 0 then
+				return
+			end
+			ev:FireServer()
+			task.wait(0.25)
+		end
+	end
+
+	local function doIsland12(isl)
+		local ev = Remotes:FindFirstChild("FloodMinigame")
+		local btn = CollectionService:GetTagged("FloodButton")[1]
+		if not ev or not btn then
+			return
+		end
+		teleport(taggedPos(btn), 0.2)
+		ev:FireServer(btn)
+		task.wait(0.4)
+	end
+
+	local function doIsland13(isl)
+		local ev = Remotes:FindFirstChild("Island13Hit")
+		if not ev then
+			return
+		end
+		for _, orderId in ipairs({ "1", "2", "3" }) do
+			if G.HUNT_STOP then
+				return
+			end
+			local pt
+			for _, ore in CollectionService:GetTagged("Island13Ores") do
+				if tostring(ore:GetAttribute("Order")) == orderId then
+					pt = ore
+					break
+				end
+			end
+			if pt then
+				teleport(taggedPos(pt), 0.15)
+				for hit = 1, 65 do
+					local session = getSession()
+					if not session or (session.Health[orderId] or 0) <= 0 or G.HUNT_STOP then
+						break
+					end
+					ev:FireServer(orderId)
+					task.wait(0.13)
+				end
+			end
+		end
+	end
+
+	local function doIsland14(isl)
+		local ev = Remotes:FindFirstChild("PetEggMinigame")
+		if not ev then
+			return
+		end
+		for _, pt in CollectionService:GetTagged("Island14CoinSpawn") do
+			if G.HUNT_STOP then
+				return
+			end
+			teleport(taggedPos(pt), 0.2)
+			ev:FireServer("Collect", tostring(pt:GetAttribute("SpawnId")))
+			task.wait(0.3)
+		end
+		task.wait(0.2)
+		local disp = CollectionService:GetTagged("Island14Dispenser")[1]
+		if disp then
+			teleport(taggedPos(disp), 0.2)
+			ev:FireServer("Dispense")
+			task.wait(0.5)
+		end
+		for i = 1, 12 do
+			local session = getSession()
+			if not session or session.Hatched or G.HUNT_STOP then
+				break
+			end
+			ev:FireServer("Hatch")
+			task.wait(0.25)
+		end
+	end
+
+	local function doIsland15(isl)
+		local ev = Remotes:FindFirstChild("Island15Dig")
+		if not ev then
+			return
+		end
+		for i = 1, 9 do
+			local session = getSession()
+			if not session or (session.Digs or 0) >= isl.count or G.HUNT_STOP then
+				return
+			end
+			local key = tostring(session.SpawnKey)
+			local pt
+			for _, spot in CollectionService:GetTagged("Island15TreasureSpawns") do
+				if tostring(spot:GetAttribute("Order")) == key then
+					pt = spot
+					break
+				end
+			end
+			if pt then
+				teleport(taggedPos(pt), 0.25)
+				ev:FireServer()
+				task.wait(0.4)
+			end
+		end
+	end
+
+	local function doIsland17(isl)
+		local ev = Remotes:FindFirstChild("MonsterEscapeMinigame")
+		local model = CollectionService:GetTagged("Island17")[1]
+		if not ev or not model then
+			return
+		end
+		local keys = model:FindFirstChild("Keys")
+		if not keys then
+			return
+		end
+		for pass = 1, 2 do
+			if G.HUNT_STOP then
+				return
+			end
+			local session = getSession()
+			local collected = session and session.CollectedIds or {}
+			for _, c in keys:GetChildren() do
+				if c:IsA("BasePart") then
+					local id = tostring(c:GetAttribute("Id"))
+					if not collected[id] then
+						teleport(c.Position, 0.2)
+						ev:FireServer(id)
+						task.wait(0.3)
+					end
+				end
+			end
+			if attr(isl.progressFlag) >= isl.count then
+				return
+			end
+		end
+	end
+
+	local function doIsland18(isl)
+		local ev = Remotes:FindFirstChild("HyperlaserMinigame")
+		local ball = CollectionService:GetTagged("BladeBalls")[1]
+		if not ev or not ball then
+			return
+		end
+		for pass = 1, 2 do
+			if G.HUNT_STOP then
+				return
+			end
+			local session = getSession()
+			local hit = session and session.HitIds or {}
+			for _, c in ball:GetDescendants() do
+				if c:IsA("BasePart") and (c:GetAttribute("ID") or c:GetAttribute("Id")) then
+					local id = tostring(c:GetAttribute("ID") or c:GetAttribute("Id"))
+					if not hit[id] then
+						teleport(c.Position, 0.15)
+						ev:FireServer(id, c.Position, workspace:GetServerTimeNow())
+						task.wait(0.3)
+					end
+				end
+			end
+			if attr(isl.progressFlag) >= isl.count then
+				return
+			end
+		end
+	end
+
+	local function doIsland19(isl)
+		local fashionEv = Remotes:FindFirstChild("FashionMinigame")
+		local equipEv = Remotes:FindFirstChild("EquippableDisplay")
+		local i19 = workspace:FindFirstChild("Gimmicks") and workspace.Gimmicks:FindFirstChild("Island19")
+		if not fashionEv or not i19 then
+			return
+		end
+		local accessories = i19:FindFirstChild("Accessories")
+		if accessories and equipEv then
+			for _, board in accessories:GetChildren() do
+				if G.HUNT_STOP then
+					return
+				end
+
+				for _, item in board:GetDescendants() do
+					if item:IsA("Accessory") or item:IsA("Accoutrement") then
+						local handle = item:FindFirstChild("Handle")
+						if handle then
+							teleport(handle.Position, 0.15)
+							equipEv:FireServer(item)
+							task.wait(0.3)
+						end
+						break
+					end
+				end
+			end
+		end
+		task.wait(0.3)
+		local runway = i19:FindFirstChild("Runway")
+		if runway then
+			local pos = runway:IsA("Model") and runway:GetPivot().Position
+				or (runway:FindFirstChildWhichIsA("BasePart") and runway:FindFirstChildWhichIsA("BasePart").Position)
+			if pos then
+				teleport(pos, 0.3)
+			end
+		end
+		fashionEv:FireServer("RunwayComplete")
+		task.wait(0.4)
+	end
+
+	local function doIsland20(isl)
+		local ev = Remotes:FindFirstChild("GrowTreeMinigame")
+		local model = workspace:FindFirstChild("Gimmicks") and workspace.Gimmicks:FindFirstChild("Island20")
+		if not ev or not model then
+			return
+		end
+		local seed, farmland, button =
+			model:FindFirstChild("Seed"), model:FindFirstChild("Farmland"), model:FindFirstChild("Button")
+		if seed and attr(isl.progressFlag) < 1 then
+			teleport(seed.Position, 0.2)
+			ev:FireServer("Collect")
+			task.wait(0.4)
+		end
+		if farmland and attr(isl.progressFlag) < 2 then
+			teleport(farmland:GetPivot().Position, 0.2)
+			ev:FireServer("Deposit")
+			task.wait(0.4)
+		end
+		if button and attr(isl.progressFlag) < isl.count then
+			teleport(button:GetPivot().Position, 0.2)
+			ev:FireServer("Water")
+			task.wait(0.4)
+		end
+	end
+
+	local ISLAND_HANDLERS = {
+		[1] = doPickup,
+		[2] = doIsland2,
+		[3] = doIsland3,
+		[4] = doIsland4,
+		[5] = doIsland5,
+		[6] = doIsland6,
+		[7] = doIsland7,
+		[8] = doIsland8,
+		[9] = doIsland9,
+		[10] = doIsland10,
+		[11] = doIsland11,
+		[12] = doIsland12,
+		[13] = doIsland13,
+		[14] = doIsland14,
+		[15] = doIsland15,
+		[16] = doPickup,
+		[17] = doIsland17,
+		[18] = doIsland18,
+		[19] = doIsland19,
+		[20] = doIsland20,
+	}
+
+	local function turnIn(isl, npc)
+		if attr(isl.turnInFlag) >= 1 then
+			return true
+		end
+		if attr(isl.progressFlag) < isl.count then
+			return false
+		end
+		if not npc then
+			npc = select(1, arrive(isl))
+		end
+		if npc then
+			gotoNpc(npc)
+			npc:FireServer("turnIn")
+			task.wait(0.35)
+			npc:FireServer("finish")
+			task.wait(0.5)
+		end
+		return attr(isl.turnInFlag) >= 1
+	end
+
+	local function scanReward(i)
+		local isl = ISLANDS[i]
+		local key = "Year_" .. string.format("%02d", i)
+		local year = YearFolders:FindFirstChild(key)
+		if not year then
+			teleport(isl.pos, 0.4)
+			year = YearFolders:FindFirstChild(key)
+		end
+		if not year then
+			return nil
+		end
+		local portal = year:FindFirstChild("Portal")
+		local ped = year:FindFirstChild("UGCPedestal")
+		local info = {
+			game = portal and portal:GetAttribute("experienceName"),
+			placeId = portal and portal:GetAttribute("placeId"),
+			badgeId = ped and ped:GetAttribute("BadgeId"),
+			ugcModel = ped and ped:GetAttribute("UGCModel"),
+		}
+		G.HUNT_REWARD_INFO[i] = info
+		if info.badgeId then
+			local ok, has = pcall(function()
+				return BadgeService:UserHasBadgeAsync(LocalPlayer.UserId, info.badgeId)
+			end)
+			G.HUNT_HAS_BADGE[i] = ok and has or nil
+		end
+		return info
+	end
+
+	local function claimReward(i)
+		local isl = ISLANDS[i]
+		local key = "Year_" .. string.format("%02d", i)
+		local function findPed()
+			local year = YearFolders:FindFirstChild(key)
+			return year and year:FindFirstChild("UGCPedestal")
+		end
+		local ped = findPed()
+		if not ped then
+			teleport(isl.pos, 0.3)
+			local t0 = os.clock()
+			repeat
+				task.wait(0.25)
+				ped = findPed()
+			until ped or os.clock() - t0 > 8
+		end
+		if not ped then
+			return false, "pedestal not found"
+		end
+		local check = ped:FindFirstChild("CheckRemote") or ped:WaitForChild("CheckRemote", 5)
+		if not check then
+			return false, "no CheckRemote"
+		end
+		local standAt = CFrame.new(ped.Position + Vector3.new(0, 3, 0))
+		local function hold()
+			local char = LocalPlayer.Character
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			if not hrp then
+				return nil
+			end
+			if (hrp.Position - standAt.Position).Magnitude > 2 then
+				hrp.AssemblyLinearVelocity = Vector3.zero
+				char:PivotTo(standAt)
+			end
+			hrp.Anchored = true
+			return hrp
+		end
+		local function release()
+			local char = LocalPlayer.Character
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				hrp.Anchored = false
+			end
+		end
+		local BACKOFF = { 0.6, 3, 5, 8, 12 }
+		local lastErr
+		for attempt = 1, #BACKOFF do
+			if not hold() then
+				lastErr = "no character"
+				break
+			end
+			task.wait(BACKOFF[attempt])
+			local ok, claimed, err = pcall(function()
+				return check:InvokeServer()
+			end)
+			if not ok then
+				lastErr = tostring(claimed)
+			elseif claimed then
+				release()
+				markClaimed(i)
+				return true, nil
+			elseif tostring(err) == "You already claimed this prize!" then
+				release()
+				markClaimed(i)
+				return true, "already claimed"
+			elseif err ~= nil and not tostring(err):find("Try again") then
+				release()
+				return false, tostring(err)
+			else
+				lastErr = err and tostring(err) or "rejected (not at pedestal)"
+			end
+		end
+		release()
+		return false, lastErr
+	end
+
+	local function farmIsland(isl)
+		if attr(isl.turnInFlag) >= 1 then
+			log("Island " .. isl.n, "already done")
+			return true
+		end
+		log("Island " .. isl.n, "-> travel")
+		local npc = arrive(isl)
+		if not npc then
+			log("Island " .. isl.n, "no NPC found")
+		end
+		startQuest(isl, npc)
+		local handler = ISLAND_HANDLERS[isl.n]
+		if handler then
+			pcall(handler, isl)
+		end
+		local prog = attr(isl.progressFlag)
+		if prog >= isl.count then
+			local ok = turnIn(isl, npc)
+			log("Island " .. isl.n, ok and "COMPLETE" or "collected, turn-in failed")
+			return ok
+		else
+			log("Island " .. isl.n, "progress " .. prog .. "/" .. isl.count .. " (island 9 needs real platforming)")
+			return false
+		end
+	end
+
+	local farmThread
+	local function farmAll()
+		if farmThread then
+			return
+		end
+		G.HUNT_STOP = false
+		farmThread = task.spawn(function()
+			local origin = hrpNow() and hrpNow().CFrame
+			for i = 1, 20 do
+				if G.HUNT_STOP then
+					break
+				end
+				pcall(farmIsland, ISLANDS[i])
+			end
+			if origin and hrpNow() then
+				hrpNow().CFrame = origin
+			end
+			log("Farm All finished")
+			farmThread = nil
+			if G.HUNT_LIB and G.HUNT_LIB.Toggles and G.HUNT_LIB.Toggles.FarmAllToggle then
+				G.HUNT_LIB.Toggles.FarmAllToggle:SetValue(false)
+			end
+		end)
+	end
+
+	if G.HUNT_LIB then
+		pcall(function()
+			G.HUNT_LIB:Unload()
+		end)
+		G.HUNT_LIB = nil
+	end
+	do
+		local containers = {}
+		local ok, hidden = pcall(function()
+			return gethui()
+		end)
+		if ok and hidden then
+			containers[#containers + 1] = hidden
+		end
+		containers[#containers + 1] = game:GetService("CoreGui")
+		local pg = LocalPlayer:FindFirstChild("PlayerGui")
+		if pg then
+			containers[#containers + 1] = pg
+		end
+		for _, c in containers do
+			for _, gui in c:GetChildren() do
+				if gui:IsA("ScreenGui") then
+					for _, d in gui:GetDescendants() do
+						if
+							d:IsA("TextLabel")
+							and (tostring(d.Text):find("auto quest") or tostring(d.Text):find("The Hunt: Roblox 20"))
+						then
+							gui:Destroy()
+							break
+						end
+					end
+				end
+			end
+		end
+	end
+
+	local Library =
+		loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua"))()
+	G.HUNT_LIB = Library
+	local Options = Library.Options
+	local Toggles = Library.Toggles
+
+	local Window = Library:CreateWindow({
+		Title = "Turbo Hub: Hunt 20",
+		Footer = "auto quest / badge farm | Turbo Hub",
+		Center = true,
+		AutoShow = true,
+		Size = UDim2.fromOffset(820, 600),
+	})
+	
+	-- Premium Glassmorphism Theme (Lucky Swaps Inspired)
+	pcall(function()
+		Library.Theme.BackgroundColor = Color3.fromRGB(11, 13, 20)
+		Library.Theme.MainColor = Color3.fromRGB(21, 24, 34)
+		Library.Theme.AccentColor = Color3.fromRGB(58, 117, 255)
+		Library.Theme.OutlineColor = Color3.fromRGB(38, 44, 58)
+		Library.Theme.FontColor = Color3.fromRGB(245, 245, 255)
+		Library.Font = Enum.Font.GothamMedium
+		Library:UpdateTheme()
+	end)
+
+	-- Apply Advanced UI Shaping (Rounded Corners, Glass Blur, Soft Shadows)
+	task.spawn(function()
+		task.wait(0.5)
+		pcall(function()
+			local core = game:GetService("CoreGui")
+			for _, screen in ipairs(core:GetChildren()) do
+				if screen:IsA("ScreenGui") and screen:FindFirstChild("Main") then
+					local main = screen.Main
+					if main:FindFirstChild("TopBar") and main.TopBar:FindFirstChild("Title") and string.find(main.TopBar.Title.Text, "Turbo Hub") then
+						-- Main Floating App Panel
+						main.BackgroundColor3 = Color3.fromRGB(11, 13, 20)
+						main.BackgroundTransparency = 0.15
+						
+						local mainCorner = main:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
+						mainCorner.CornerRadius = UDim.new(0, 16)
+						mainCorner.Parent = main
+						
+						for _, obj in ipairs(main:GetDescendants()) do
+							-- Dashboard Content Panels / Cards
+							if obj:IsA("Frame") and (obj.Name == "Groupbox" or obj.Name == "Left" or obj.Name == "Right" or obj.Name == "Container") then
+								obj.BackgroundColor3 = Color3.fromRGB(21, 24, 34)
+								obj.BackgroundTransparency = 0.25
+								
+								local corner = obj:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
+								corner.CornerRadius = UDim.new(0, 14)
+								corner.Parent = obj
+								
+								local stroke = obj:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
+								stroke.Color = Color3.fromRGB(45, 52, 70)
+								stroke.Thickness = 1
+								stroke.Transparency = 0.6
+								stroke.Parent = obj
+							end
+							
+							-- Buttons
+							if obj:IsA("TextButton") then
+								obj.BackgroundColor3 = Color3.fromRGB(28, 32, 45)
+								obj.BackgroundTransparency = 0.1
+								
+								local corner = obj:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
+								corner.CornerRadius = UDim.new(0, 8)
+								corner.Parent = obj
+								
+								local stroke = obj:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
+								stroke.Color = Color3.fromRGB(58, 117, 255)
+								stroke.Thickness = 1
+								stroke.Transparency = 0.7
+								stroke.Parent = obj
+							end
+							
+							-- Fonts and Readability
+							if obj:IsA("TextLabel") or obj:IsA("TextBox") then
+								obj.Font = Enum.Font.GothamMedium
+							end
+							
+							-- Remove rigid solid borders from the original layout
+							if obj:IsA("Frame") and (obj.Size == UDim2.new(1, 0, 0, 1) or obj.Size == UDim2.new(0, 1, 1, 0)) then
+								if obj.BackgroundColor3.R < 0.3 then -- target dark outlines
+									obj.BackgroundTransparency = 1 
+								end
+							end
+						end
+					end
+				end
+			end
+		end)
+	end)
+
+	local TabFarm = Window:AddTab("Farm")
+	local TabStatus = Window:AddTab("Status")
+	addChangelogTab(Window)
+
+	local ctl = TabFarm:AddLeftGroupbox("Controls")
+	ctl:AddToggle("FarmAllToggle", {
+		Text = "Farm All",
+		Default = false,
+		Callback = function(value)
+			if value then
+				farmAll()
+			else
+				G.HUNT_STOP = true
+			end
+		end,
+	})
+
+	local perBox = TabFarm:AddRightGroupbox("Single island")
+	local islandDropdown = perBox:AddDropdown("IslandPick", {
+		Values = (function()
+			local t = {}
+			for i = 1, 20 do
+				t[i] = "Island " .. i .. " (" .. ISLANDS[i].label .. ")"
+			end
+			return t
+		end)(),
+		Default = 1,
+		Text = "Target",
+	})
+
+	local singleThread
+	perBox:AddToggle("FarmSelectedToggle", {
+		Text = "Farm selected",
+		Default = false,
+		Callback = function(value)
+			if value then
+				local idx = tonumber((Options.IslandPick.Value:match("Island (%d+)")))
+				if idx and not farmThread and not singleThread then
+					G.HUNT_STOP = false
+					singleThread = task.spawn(function()
+						pcall(farmIsland, ISLANDS[idx])
+						singleThread = nil
+						if Toggles.FarmSelectedToggle then
+							Toggles.FarmSelectedToggle:SetValue(false)
+						end
+					end)
+				end
+			else
+				G.HUNT_STOP = true
+			end
+		end,
+	})
+
+	local travelling = false
+	perBox:AddButton({
+		Text = "Travel to selected",
+		Func = function()
+			if travelling then
+				return
+			end
+			local idx = tonumber((Options.IslandPick.Value:match("Island (%d+)")))
+			if idx then
+				travelling = true
+				task.spawn(function()
+					pcall(arrive, ISLANDS[idx])
+					travelling = false
+				end)
+			end
+		end,
+	})
+
+	local ISLAND_GAMES = {
+		[1] = 1818,
+		[2] = 47324,
+		[3] = 25415,
+		[4] = 14403,
+		[5] = 192800,
+		[6] = 189707,
+		[7] = 18164449,
+		[8] = 863266079,
+		[9] = 142823291,
+		[10] = 13822889,
+		[11] = 9689581,
+		[12] = 606849621,
+		[13] = 537413528,
+		[14] = 920587237,
+		[15] = 2727067538,
+		[16] = 4623386862,
+		[17] = 8481844229,
+		[18] = 13772394625,
+		[19] = 15101393044,
+		[20] = 126884695634066,
+	}
+
+	local ISLAND_BADGES = {
+		[1] = 4036544995812202,
+		[2] = 2176983117961323,
+		[3] = 2032546335850202,
+		[4] = 823979884544596,
+		[5] = 31088659531866,
+		[6] = 1950450904039809,
+		[7] = 4449519854199008,
+		[8] = 1985785484439323,
+		[9] = 3774948711767093,
+		[10] = 2747787858420374,
+		[11] = 2518870989628698,
+		[12] = 4306759006767505,
+		[13] = 4387926669504103,
+		[14] = 3720272393025103,
+		[15] = 2124728509,
+		[16] = 702906516594361,
+		[17] = 4082518353991699,
+		[18] = 1873215711178593,
+		[19] = 2648924952692335,
+		[20] = 4292816078974682,
+	}
+
+	local ISLAND_GAME_NAMES = {
+		[1] = "Crossroads",
+		[2] = "Sword Fights on the Heights IV",
+		[3] = "Rocket Arena",
+		[4] = "Chaos Canyon",
+		[5] = "Work at a Pizza Place",
+		[6] = "Natural Disaster Survival",
+		[7] = "Base Wars",
+		[8] = "Apocalypse Rising 2",
+		[9] = "Murder Mystery 2",
+		[10] = "Lumber Tycoon 2",
+		[11] = "Roblox High School",
+		[12] = "Jailbreak",
+		[13] = "Build a Boat",
+		[14] = "Adopt Me!",
+		[15] = "World // Zero",
+		[16] = "Piggy",
+		[17] = "Berry Avenue RP",
+		[18] = "Blade Ball",
+		[19] = "Dress to Impress",
+		[20] = "Grow a Garden",
+	}
+
+	for i = 1, 20 do
+		local info = G.HUNT_REWARD_INFO[i] or {}
+		info.game = info.game or ISLAND_GAME_NAMES[i]
+		info.placeId = info.placeId or ISLAND_GAMES[i]
+		info.badgeId = info.badgeId or ISLAND_BADGES[i]
+		G.HUNT_REWARD_INFO[i] = info
+	end
+
+	local function queueAutoload()
+		local queue = queue_on_teleport or queueonteleport
+		if queue and not G.HUNT_AUTOLOAD_QUEUED then
+			G.HUNT_AUTOLOAD_QUEUED = true
+			queue(HUNT_QUEUE_SOURCE)
+		end
+	end
+	queueAutoload()
+
+	local gameTeleporting = false
+	perBox:AddButton({
+		Text = "Go to island's game",
+		Func = function()
+			if gameTeleporting then
+				return
+			end
+			local idx = tonumber((Options.IslandPick.Value:match("Island (%d+)")))
+			local placeId = idx and ISLAND_GAMES[idx]
+			local remote = game:GetService("ReplicatedStorage"):FindFirstChild("TeleportRequest")
+			if not placeId or not remote then
+				Library:Notify("No game/teleport remote for that island", 4)
+				return
+			end
+			gameTeleporting = true
+			queueAutoload()
+			task.spawn(function()
+				local ok, success, err = pcall(function()
+					return remote:InvokeServer(placeId)
+				end)
+				if not ok or not success then
+					gameTeleporting = false
+					Library:Notify("Teleport failed: " .. tostring(ok and err or success), 5)
+				end
+			end)
+		end,
+	})
+
+	local statusBox = TabStatus:AddLeftGroupbox("Quest status")
+	statusBox:AddLabel("Quest turn-in does NOT unlock the podium.", true)
+	local totalLabel = statusBox:AddLabel("Quests completed: 0/20", true)
+	local claimedLabel = statusBox:AddLabel("UGC actually claimed: 0/20", true)
+
+	local updateIsland, updateTotals
+
+	local claiming = false
+	local function autoClaim()
+		if claiming or not updateIsland then
+			return
+		end
+		claiming = true
+		local origin = hrpNow() and hrpNow().CFrame
+		local moved = false
+		for i = 1, 20 do
+			if not (Toggles.AutoClaimToggle and Toggles.AutoClaimToggle.Value) then
+				break
+			end
+			if not G.HUNT_CLAIMED[i] and ISLAND_BADGES[i] then
+				local ok, has = pcall(function()
+					return BadgeService:UserHasBadgeAsync(LocalPlayer.UserId, ISLAND_BADGES[i])
+				end)
+				if ok then
+					G.HUNT_HAS_BADGE[i] = has
+				end
+				if ok and has then
+					moved = true
+					local claimed, err = claimReward(i)
+					log(
+						"Island " .. i,
+						claimed and ("UGC claimed" .. (err and (" (" .. err .. ")") or ""))
+							or ("claim failed: " .. tostring(err))
+					)
+				end
+				updateIsland(i)
+				updateTotals()
+			end
+		end
+		if moved and origin and hrpNow() then
+			hrpNow().CFrame = origin
+		end
+		claiming = false
+	end
+
+	statusBox:AddToggle("AutoClaimToggle", {
+		Text = "Auto-claim UGC",
+		Default = true,
+		Callback = function(value)
+			if value then
+				task.spawn(autoClaim)
+			end
+		end,
+	})
+	statusBox:AddDivider()
+
+	local islandLabels = {}
+	local rewardLabels = {}
+	for i = 1, 20 do
+		islandLabels[i] = statusBox:AddLabel("...", true)
+		rewardLabels[i] = statusBox:AddLabel("...", true)
+	end
+
+	updateIsland = function(i)
+		local isl = ISLANDS[i]
+		local prog = attr(isl.progressFlag)
+		local turned = attr(isl.turnInFlag) >= 1
+		local started = attr(isl.startFlag) >= 1
+		local state
+		if turned then
+			state = "quest DONE"
+		elseif started then
+			state = "quest " .. comma(math.min(prog, isl.count)) .. "/" .. comma(isl.count)
+		else
+			state = "quest not started"
+		end
+		local mark = turned and "[x]" or "[ ]"
+		islandLabels[i]:SetText(mark .. " I" .. i .. " " .. isl.label .. ": " .. state)
+
+		local info = G.HUNT_REWARD_INFO[i]
+		local hasBadge = G.HUNT_HAS_BADGE[i]
+		local claimed = G.HUNT_CLAIMED[i]
+		local rewardState
+		if claimed then
+			rewardState = "UGC CLAIMED"
+		elseif hasBadge == nil then
+			rewardState = "checking badge..."
+		elseif hasBadge then
+			rewardState = "badge earned, not claimed"
+		else
+			local game = tostring(info.game or "cross-game challenge")
+			if #game > 26 then
+				game = game:sub(1, 25) .. "â€¦"
+			end
+			rewardState = "needs badge: " .. game
+		end
+		local rmark = claimed and "    [x]" or "    [ ]"
+		rewardLabels[i]:SetText(rmark .. " " .. rewardState)
+	end
+
+	updateTotals = function()
+		local done, claimedCount = 0, 0
+		for i = 1, 20 do
+			if attr(ISLANDS[i].turnInFlag) >= 1 then
+				done = done + 1
+			end
+			if G.HUNT_CLAIMED[i] then
+				claimedCount = claimedCount + 1
+			end
+		end
+		totalLabel:SetText("Quests completed: " .. comma(done) .. "/20")
+		claimedLabel:SetText("UGC actually claimed: " .. comma(claimedCount) .. "/20")
+	end
+
+	if G.HUNT_CONNS then
+		for _, c in G.HUNT_CONNS do
+			pcall(function()
+				c:Disconnect()
+			end)
+		end
+	end
+	G.HUNT_CONNS = {}
+
+	for i = 1, 20 do
+		updateIsland(i)
+		local isl = ISLANDS[i]
+		local seen = {}
+		for _, flag in ipairs({ isl.startFlag, isl.progressFlag, isl.turnInFlag }) do
+			if not seen[flag] then
+				seen[flag] = true
+				table.insert(
+					G.HUNT_CONNS,
+					LocalPlayer:GetAttributeChangedSignal(ATT .. flag):Connect(function()
+						updateIsland(i)
+						updateTotals()
+					end)
+				)
+			end
+		end
+	end
+	updateTotals()
+
+	G.HUNT_API = {
+		farmIsland = farmIsland,
+		farmAll = farmAll,
+		arrive = arrive,
+		islands = ISLANDS,
+		status = function()
+			local done = 0
+			for i = 1, 20 do
+				if attr(ISLANDS[i].turnInFlag) >= 1 then
+					done = done + 1
+				end
+			end
+			return done
+		end,
+	}
+
+	log("Hunt farm loaded - all 20 islands mapped (island 9 is real-platforming, best-effort only)")
+
+	if Toggles.AutoClaimToggle and Toggles.AutoClaimToggle.Value then
+		task.spawn(autoClaim)
+	end
+end
+
+local function runHeights()
+	if game.PlaceId ~= 47324 then
+		return
+	end
+
+	local Players = game:GetService("Players")
+	local HttpService = game:GetService("HttpService")
+	local TeleportService = game:GetService("TeleportService")
+
+	repeat
+		task.wait()
+	until game:IsLoaded()
+
+	local LocalPlayer = Players.LocalPlayer
+	local G = getgenv()
+
+	do
+		local queue = queue_on_teleport or queueonteleport
+		if queue and not G.HUNT_AUTOLOAD_QUEUED then
+			G.HUNT_AUTOLOAD_QUEUED = true
+			queue(HUNT_QUEUE_SOURCE)
+		end
+	end
+
+	local HUB_PLACE = 74205509034203
+	local CACHE_FILE = "heights_sword_textures.json"
+	local SWORD_ORDER = { "IceDagger", "Firebrand", "Venomshank", "Windforce", "Illumina", "Ghostwalker", "Darkheart" }
+	local SWORDS = {}
+	for _, n in SWORD_ORDER do
+		SWORDS[n] = true
+	end
+
+	if G.SWORDESP_CONNS then
+		for _, c in G.SWORDESP_CONNS do
+			pcall(function()
+				c:Disconnect()
+			end)
+		end
+	end
+	if G.SWORDESP_ENTRIES then
+		for _, e in G.SWORDESP_ENTRIES do
+			pcall(function()
+				e:Destroy()
+			end)
+		end
+	end
+	G.SWORDESP_CONNS = {}
+	G.SWORDESP_ENTRIES = {}
+	G.SWORDESP_ENABLED = true
+
+	if not G.MSESP then
+		local ok, lib = pcall(function()
+			getgenv().mstudio45_ESP = nil
+			local src = game:HttpGet("https://raw.githubusercontent.com/mstudio45/MSESP/main/source.luau")
+			src = src:gsub("CoreGuiAllowed = successCoreGui and CoreGui ~= nil;", "CoreGuiAllowed = false;")
+			return loadstring(src)()
+		end)
+		if ok then
+			G.MSESP = lib
+		end
+	end
+	local ESP = G.MSESP
+	if ESP then
+		ESP.GlobalConfig.Boxes2D = false
+		ESP.GlobalConfig.Boxes3D = false
+		ESP.GlobalConfig.Skeleton = false
+		ESP.GlobalConfig.Arrows = false
+		ESP.GlobalConfig.Tracers = false
+		ESP.GlobalConfig.Rainbow = false
+		ESP.GlobalConfig.Highlighters = true
+		ESP.GlobalConfig.Billboards = true
+		ESP.GlobalConfig.Distance = true
+	end
+
+	local function assetId(url)
+		return url and tostring(url):match("(%d+)") or nil
+	end
+
+	local textures = {
+		IceDagger = "83689547",
+		Venomshank = "82741319",
+	}
+	pcall(function()
+		if isfile and isfile(CACHE_FILE) then
+			for k, v in HttpService:JSONDecode(readfile(CACHE_FILE)) do
+				textures[k] = v
+			end
+		end
+	end)
+
+	local function saveTextures()
+		pcall(function()
+			if writefile then
+				writefile(CACHE_FILE, HttpService:JSONEncode(textures))
+			end
+		end)
+	end
+
+	local function discovered()
+		return LocalPlayer:GetAttribute("QuestSwordsDiscovered") or 0
+	end
+
+	local function questDone()
+		return discovered() >= 3
+	end
+
+	local function collectedSet()
+		local set = {}
+		for i = 1, 3 do
+			local id = assetId(LocalPlayer:GetAttribute("QuestSwordIcon" .. i))
+			if id then
+				for name, tex in textures do
+					if tex == id then
+						set[name] = true
+					end
+				end
+			end
+		end
+		return set
+	end
+
+	local function swordName(inst)
+		if inst.Name:sub(1, 6) ~= "Proxy_" then
+			return nil
+		end
+		local name = inst.Name:sub(7)
+		return SWORDS[name] and name or nil
+	end
+
+	local function remove(inst)
+		local e = G.SWORDESP_ENTRIES[inst]
+		if e then
+			pcall(function()
+				e:Destroy()
+			end)
+			G.SWORDESP_ENTRIES[inst] = nil
+		end
+	end
+
+	local function add(inst)
+		if not ESP or not G.SWORDESP_ENABLED then
+			return
+		end
+		local name = swordName(inst)
+		if not name or G.SWORDESP_ENTRIES[inst] then
+			return
+		end
+		if questDone() or collectedSet()[name] then
+			return
+		end
+		local ok, e = pcall(function()
+			return ESP:Add({
+				Model = inst,
+				Name = name,
+				Color = Color3.fromRGB(80, 255, 120),
+				ESPType = "Highlight",
+				FillTransparency = 0.4,
+				OutlineTransparency = 0,
+				MaxDistance = 5000,
+			})
+		end)
+		if ok and e then
+			G.SWORDESP_ENTRIES[inst] = e
+		end
+	end
+
+	local updateLabels
+
+	local function refresh()
+		local done = questDone()
+		local collected = collectedSet()
+		for inst in G.SWORDESP_ENTRIES do
+			local name = swordName(inst)
+			if not G.SWORDESP_ENABLED or done or not inst.Parent or (name and collected[name]) then
+				remove(inst)
+			end
+		end
+		if G.SWORDESP_ENABLED and not done then
+			for _, inst in workspace:GetChildren() do
+				add(inst)
+			end
+		end
+		if updateLabels then
+			updateLabels()
+		end
+	end
+
+	local function learnTool(tool)
+		if tool:IsA("Tool") and SWORDS[tool.Name] then
+			local id = assetId(tool.TextureId)
+			if id and textures[tool.Name] ~= id then
+				textures[tool.Name] = id
+				saveTextures()
+				refresh()
+			end
+		end
+	end
+
+	local function watchContainer(container)
+		for _, t in container:GetChildren() do
+			learnTool(t)
+		end
+		table.insert(G.SWORDESP_CONNS, container.ChildAdded:Connect(learnTool))
+	end
+
+	if G.HEIGHTS_LIB then
+		pcall(function()
+			G.HEIGHTS_LIB:Unload()
+		end)
+		G.HEIGHTS_LIB = nil
+	end
+
+	local Library =
+		loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua"))()
+	G.HEIGHTS_LIB = Library
+
+	local Window = Library:CreateWindow({
+		Title = "Turbo Hub: Heights IV",
+		Footer = "sword quest | Turbo Hub",
+		Center = true,
+		AutoShow = true,
+		Size = UDim2.fromOffset(520, 360),
+	})
+
+	-- Premium Glassmorphism Theme (Lucky Swaps Inspired)
+	pcall(function()
+		Library.Theme.BackgroundColor = Color3.fromRGB(11, 13, 20)
+		Library.Theme.MainColor = Color3.fromRGB(21, 24, 34)
+		Library.Theme.AccentColor = Color3.fromRGB(58, 117, 255)
+		Library.Theme.OutlineColor = Color3.fromRGB(38, 44, 58)
+		Library.Theme.FontColor = Color3.fromRGB(245, 245, 255)
+		Library.Font = Enum.Font.GothamMedium
+		Library:UpdateTheme()
+	end)
+
+	-- Apply Advanced UI Shaping (Rounded Corners, Glass Blur, Soft Shadows)
+	task.spawn(function()
+		task.wait(0.5)
+		pcall(function()
+			local core = game:GetService("CoreGui")
+			for _, screen in ipairs(core:GetChildren()) do
+				if screen:IsA("ScreenGui") and screen:FindFirstChild("Main") then
+					local main = screen.Main
+					if main:FindFirstChild("TopBar") and main.TopBar:FindFirstChild("Title") and string.find(main.TopBar.Title.Text, "Turbo Hub") then
+						-- Main Floating App Panel
+						main.BackgroundColor3 = Color3.fromRGB(11, 13, 20)
+						main.BackgroundTransparency = 0.15
+						
+						local mainCorner = main:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
+						mainCorner.CornerRadius = UDim.new(0, 16)
+						mainCorner.Parent = main
+						
+						for _, obj in ipairs(main:GetDescendants()) do
+							-- Dashboard Content Panels / Cards
+							if obj:IsA("Frame") and (obj.Name == "Groupbox" or obj.Name == "Left" or obj.Name == "Right" or obj.Name == "Container") then
+								obj.BackgroundColor3 = Color3.fromRGB(21, 24, 34)
+								obj.BackgroundTransparency = 0.25
+								
+								local corner = obj:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
+								corner.CornerRadius = UDim.new(0, 14)
+								corner.Parent = obj
+								
+								local stroke = obj:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
+								stroke.Color = Color3.fromRGB(45, 52, 70)
+								stroke.Thickness = 1
+								stroke.Transparency = 0.6
+								stroke.Parent = obj
+							end
+							
+							-- Buttons
+							if obj:IsA("TextButton") then
+								obj.BackgroundColor3 = Color3.fromRGB(28, 32, 45)
+								obj.BackgroundTransparency = 0.1
+								
+								local corner = obj:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
+								corner.CornerRadius = UDim.new(0, 8)
+								corner.Parent = obj
+								
+								local stroke = obj:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
+								stroke.Color = Color3.fromRGB(58, 117, 255)
+								stroke.Thickness = 1
+								stroke.Transparency = 0.7
+								stroke.Parent = obj
+							end
+							
+							-- Fonts and Readability
+							if obj:IsA("TextLabel") or obj:IsA("TextBox") then
+								obj.Font = Enum.Font.GothamMedium
+							end
+							
+							-- Remove rigid solid borders from the original layout
+							if obj:IsA("Frame") and (obj.Size == UDim2.new(1, 0, 0, 1) or obj.Size == UDim2.new(0, 1, 1, 0)) then
+								if obj.BackgroundColor3.R < 0.3 then -- target dark outlines
+									obj.BackgroundTransparency = 1 
+								end
+							end
+						end
+					end
+				end
+			end
+		end)
+	end)
+
+	local Tab = Window:AddTab("Swords")
+	addChangelogTab(Window)
+	local box = Tab:AddLeftGroupbox("Sword quest")
+
+	local countLabel = box:AddLabel("Swords: -", true)
+	local leftLabel = box:AddLabel("Not collected: -", true)
+	box:AddDivider()
+
+	box:AddToggle("SwordESPToggle", {
+		Text = "Sword ESP",
+		Default = true,
+		Callback = function(value)
+			G.SWORDESP_ENABLED = value
+			refresh()
+		end,
+	})
+
+	local returning = false
+	box:AddButton({
+		Text = "Return to hub",
+		Func = function()
+			if returning then
+				return
+			end
+			returning = true
+			local queue = queue_on_teleport or queueonteleport
+			if queue and not G.HUNT_AUTOLOAD_QUEUED then
+				G.HUNT_AUTOLOAD_QUEUED = true
+				queue(HUNT_QUEUE_SOURCE)
+			end
+			local ok, err = pcall(function()
+				TeleportService:Teleport(HUB_PLACE, LocalPlayer)
+			end)
+			if not ok then
+				returning = false
+				Library:Notify("Teleport failed: " .. tostring(err), 4)
+			end
+		end,
+	})
+
+	updateLabels = function()
+		local shown = math.min(discovered() + 1, 4)
+		if questDone() then
+			countLabel:SetText("Swords: 4/4 - quest complete")
+			leftLabel:SetText("Nothing left to collect.")
+			return
+		end
+		countLabel:SetText("Swords: " .. shown .. "/4")
+		local collected = collectedSet()
+		local left = {}
+		for _, n in SWORD_ORDER do
+			if not collected[n] then
+				left[#left + 1] = n
+			end
+		end
+		leftLabel:SetText("Not collected: " .. table.concat(left, ", "))
+	end
+
+	table.insert(G.SWORDESP_CONNS, workspace.ChildAdded:Connect(add))
+	table.insert(G.SWORDESP_CONNS, workspace.ChildRemoved:Connect(remove))
+	for i = 1, 3 do
+		table.insert(G.SWORDESP_CONNS, LocalPlayer:GetAttributeChangedSignal("QuestSwordIcon" .. i):Connect(refresh))
+	end
+	table.insert(G.SWORDESP_CONNS, LocalPlayer:GetAttributeChangedSignal("QuestSwordsDiscovered"):Connect(refresh))
+
+	watchContainer(LocalPlayer:WaitForChild("Backpack"))
+	if LocalPlayer.Character then
+		watchContainer(LocalPlayer.Character)
+	end
+	table.insert(G.SWORDESP_CONNS, LocalPlayer.CharacterAdded:Connect(watchContainer))
+	table.insert(
+		G.SWORDESP_CONNS,
+		LocalPlayer.ChildAdded:Connect(function(child)
+			if child:IsA("Backpack") then
+				watchContainer(child)
+			end
+		end)
+	)
+
+	refresh()
+end
+
+local function runBrickBattle()
+	local GAMES = {
+		[1818] = { name = "Crossroads", island = 1, badge = 4036544995812202 },
+		[25415] = { name = "Rocket Arena", island = 3, badge = 2032546335850202 },
+		[14403] = { name = "Chaos Canyon", island = 4, badge = 823979884544596 },
+	}
+
+	local CONFIG = GAMES[game.PlaceId]
+	if not CONFIG then
+		return
+	end
+
+	local Players = game:GetService("Players")
+	local TeleportService = game:GetService("TeleportService")
+	local BadgeService = game:GetService("BadgeService")
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local RunService = game:GetService("RunService")
+
+	repeat
+		task.wait()
+	until game:IsLoaded()
+
+	local LocalPlayer = Players.LocalPlayer
+	local G = getgenv()
+
+	local HUB_PLACE = 74205509034203
+	local AFK_SECONDS = 15
+	local AFK_MOVE = 2
+
+	do
+		local queue = queue_on_teleport or queueonteleport
+		if queue and not G.HUNT_AUTOLOAD_QUEUED then
+			G.HUNT_AUTOLOAD_QUEUED = true
+			queue(HUNT_QUEUE_SOURCE)
+		end
+	end
+
+	for _, key in { "ROCKET_CLEANUP", "BB_CLEANUP" } do
+		if G[key] then
+			pcall(G[key])
+			G[key] = nil
+		end
+	end
+	for _, key in { "ROCKET_LIB", "BB_LIB" } do
+		if G[key] then
+			pcall(function()
+				G[key]:Unload()
+			end)
+			G[key] = nil
+		end
+	end
+
+	pcall(function()
+		local ctx = LocalPlayer:FindFirstChild("BrickBattleInputContext")
+		local remote = ctx and ctx:FindFirstChild("SetGamepadAim")
+		if remote then
+			remote:FireServer(false)
+		end
+		LocalPlayer:SetAttribute("BrickBattleGamepadAim", false)
+	end)
+
+	local conns = {}
+	local espEntries = {}
+	local afkState = {}
+
+	if not G.MSESP then
+		local ok, lib = pcall(function()
+			getgenv().mstudio45_ESP = nil
+			local src = game:HttpGet("https://raw.githubusercontent.com/mstudio45/MSESP/main/source.luau")
+			src = src:gsub("CoreGuiAllowed = successCoreGui and CoreGui ~= nil;", "CoreGuiAllowed = false;")
+			return loadstring(src)()
+		end)
+		if ok then
+			G.MSESP = lib
+		end
+	end
+	local ESP = G.MSESP
+	if ESP then
+		ESP.GlobalConfig.Boxes2D = false
+		ESP.GlobalConfig.Boxes3D = false
+		ESP.GlobalConfig.Skeleton = false
+		ESP.GlobalConfig.Arrows = false
+		ESP.GlobalConfig.Tracers = false
+		ESP.GlobalConfig.Rainbow = false
+		ESP.GlobalConfig.Highlighters = true
+		ESP.GlobalConfig.Billboards = true
+		ESP.GlobalConfig.Distance = true
+	end
+
+	local showSessionOnly = false
+	pcall(function()
+		local mod = ReplicatedStorage.BrickBattle:FindFirstChild("getFlagShowKOsForThisSessionOnly")
+		if mod then
+			local f = require(mod)
+			showSessionOnly = (type(f) == "function" and f()) or f == true
+		end
+	end)
+
+	local Library =
+		loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua"))()
+	G.BB_LIB = Library
+
+	local Window = Library:CreateWindow({
+		Title = "Turbo Hub: " .. CONFIG.name,
+		Footer = "island " .. CONFIG.island .. " | Turbo Hub",
+		Center = true,
+		AutoShow = true,
+		Size = UDim2.fromOffset(560, 300),
+	})
+
+	-- Premium Glassmorphism Theme (Lucky Swaps Inspired)
+	pcall(function()
+		Library.Theme.BackgroundColor = Color3.fromRGB(11, 13, 20)
+		Library.Theme.MainColor = Color3.fromRGB(21, 24, 34)
+		Library.Theme.AccentColor = Color3.fromRGB(58, 117, 255)
+		Library.Theme.OutlineColor = Color3.fromRGB(38, 44, 58)
+		Library.Theme.FontColor = Color3.fromRGB(245, 245, 255)
+		Library.Font = Enum.Font.GothamMedium
+		Library:UpdateTheme()
+	end)
+
+	-- Apply Advanced UI Shaping (Rounded Corners, Glass Blur, Soft Shadows)
+	task.spawn(function()
+		task.wait(0.5)
+		pcall(function()
+			local core = game:GetService("CoreGui")
+			for _, screen in ipairs(core:GetChildren()) do
+				if screen:IsA("ScreenGui") and screen:FindFirstChild("Main") then
+					local main = screen.Main
+					if main:FindFirstChild("TopBar") and main.TopBar:FindFirstChild("Title") and string.find(main.TopBar.Title.Text, "Turbo Hub") then
+						-- Main Floating App Panel
+						main.BackgroundColor3 = Color3.fromRGB(11, 13, 20)
+						main.BackgroundTransparency = 0.15
+						
+						local mainCorner = main:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
+						mainCorner.CornerRadius = UDim.new(0, 16)
+						mainCorner.Parent = main
+						
+						for _, obj in ipairs(main:GetDescendants()) do
+							-- Dashboard Content Panels / Cards
+							if obj:IsA("Frame") and (obj.Name == "Groupbox" or obj.Name == "Left" or obj.Name == "Right" or obj.Name == "Container") then
+								obj.BackgroundColor3 = Color3.fromRGB(21, 24, 34)
+								obj.BackgroundTransparency = 0.25
+								
+								local corner = obj:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
+								corner.CornerRadius = UDim.new(0, 14)
+								corner.Parent = obj
+								
+								local stroke = obj:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
+								stroke.Color = Color3.fromRGB(45, 52, 70)
+								stroke.Thickness = 1
+								stroke.Transparency = 0.6
+								stroke.Parent = obj
+							end
+							
+							-- Buttons
+							if obj:IsA("TextButton") then
+								obj.BackgroundColor3 = Color3.fromRGB(28, 32, 45)
+								obj.BackgroundTransparency = 0.1
+								
+								local corner = obj:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
+								corner.CornerRadius = UDim.new(0, 8)
+								corner.Parent = obj
+								
+								local stroke = obj:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
+								stroke.Color = Color3.fromRGB(58, 117, 255)
+								stroke.Thickness = 1
+								stroke.Transparency = 0.7
+								stroke.Parent = obj
+							end
+							
+							-- Fonts and Readability
+							if obj:IsA("TextLabel") or obj:IsA("TextBox") then
+								obj.Font = Enum.Font.GothamMedium
+							end
+							
+							-- Remove rigid solid borders from the original layout
+							if obj:IsA("Frame") and (obj.Size == UDim2.new(1, 0, 0, 1) or obj.Size == UDim2.new(0, 1, 1, 0)) then
+								if obj.BackgroundColor3.R < 0.3 then -- target dark outlines
+									obj.BackgroundTransparency = 1 
+								end
+							end
+						end
+					end
+				end
+			end
+		end)
+	end)
+
+	local Tab = Window:AddTab("Main")
+	addChangelogTab(Window)
+	local box = Tab:AddLeftGroupbox("Badge")
+
+	local needLabel = box:AddLabel("Need - KOs for the badge.", true)
+	local koLabel = box:AddLabel("KOs: -", true)
+	local badgeLabel = box:AddLabel("Badge: checking...", true)
+	box:AddDivider()
+
+	local returning = false
+	conns[#conns + 1] = TeleportService.TeleportInitFailed:Connect(function(player, _, msg)
+		if player ~= LocalPlayer then
+			return
+		end
+		returning = false
+		if tostring(msg):find("different creator") then
+			Library:Notify(
+				"This game blocks teleports to the hub. Leave and join The Hunt from Roblox - the hub UI loads automatically.",
+				8
+			)
+		else
+			Library:Notify("Hub teleport failed: " .. tostring(msg), 6)
+		end
+	end)
+	box:AddButton({
+		Text = "Return to hub",
+		Func = function()
+			if returning then
+				return
+			end
+			returning = true
+			local ok, err = pcall(function()
+				TeleportService:Teleport(HUB_PLACE, LocalPlayer)
+			end)
+			if not ok then
+				returning = false
+				Library:Notify("Hub teleport failed: " .. tostring(err), 5)
+			end
+		end,
+	})
+
+	local function isAfk(p)
+		local s = afkState[p]
+		return s ~= nil and os.clock() - s.lastMove >= AFK_SECONDS
+	end
+
+	local function removeEsp(p)
+		local e = espEntries[p]
+		if e then
+			pcall(function()
+				e.entry:Destroy()
+			end)
+			espEntries[p] = nil
+		end
+	end
+
+	local function addEsp(p)
+		if not ESP or p == LocalPlayer or not (Library.Toggles.PlayerESP and Library.Toggles.PlayerESP.Value) then
+			return
+		end
+		local char = p.Character
+		if not char then
+			return
+		end
+		removeEsp(p)
+		local afk = isAfk(p)
+		local ok, e = pcall(function()
+			return ESP:Add({
+				Model = char,
+				Name = (afk and "[AFK] " or "") .. p.DisplayName,
+				Color = afk and Color3.fromRGB(255, 220, 60) or Color3.fromRGB(255, 70, 70),
+				ESPType = "Highlight",
+				FillTransparency = 0.6,
+				OutlineTransparency = 0,
+				MaxDistance = 2000,
+			})
+		end)
+		if ok and e then
+			espEntries[p] = { entry = e, afk = afk }
+		end
+	end
+
+	local function refreshAllEsp()
+		for p in espEntries do
+			removeEsp(p)
+		end
+		for _, p in Players:GetPlayers() do
+			addEsp(p)
+		end
+	end
+
+	local espBox = Tab:AddRightGroupbox("ESP")
+	espBox:AddToggle("PlayerESP", {
+		Text = "Player ESP",
+		Default = true,
+		Callback = refreshAllEsp,
+	})
+	espBox:AddLabel("Yellow = AFK player", true)
+
+	local function watchPlayer(p)
+		if p == LocalPlayer then
+			return
+		end
+		conns[#conns + 1] = p.CharacterAdded:Connect(function()
+			afkState[p] = nil
+			task.wait(0.5)
+			addEsp(p)
+		end)
+		if p.Character then
+			addEsp(p)
+		end
+	end
+
+	for _, p in Players:GetPlayers() do
+		watchPlayer(p)
+	end
+	conns[#conns + 1] = Players.PlayerAdded:Connect(watchPlayer)
+	conns[#conns + 1] = Players.PlayerRemoving:Connect(function(p)
+		removeEsp(p)
+		afkState[p] = nil
+	end)
+
+	local afkAccum = 0
+	conns[#conns + 1] = RunService.Heartbeat:Connect(function(dt)
+		afkAccum += dt
+		if afkAccum < 1 then
+			return
+		end
+		afkAccum = 0
+		for _, p in Players:GetPlayers() do
+			if p ~= LocalPlayer then
+				local char = p.Character
+				local hrp = char and char:FindFirstChild("HumanoidRootPart")
+				if hrp then
+					local s = afkState[p]
+					if not s or (hrp.Position - s.pos).Magnitude > AFK_MOVE then
+						afkState[p] = { pos = hrp.Position, lastMove = os.clock() }
+					end
+					local entry = espEntries[p]
+					if entry and entry.afk ~= isAfk(p) then
+						addEsp(p)
+					end
+				end
+			end
+		end
+	end)
+
+	local function totalKOs()
+		local ls = LocalPlayer:FindFirstChild("leaderstats")
+		local kos = ls and ls:FindFirstChild("KOs")
+		if not kos then
+			return 0, nil
+		end
+		local saved = kos:GetAttribute("savedKOs") or 0
+		return showSessionOnly and (saved + kos.Value) or kos.Value, kos
+	end
+
+	local function updateBadge()
+		task.spawn(function()
+			local ok, has = pcall(function()
+				return BadgeService:UserHasBadgeAsync(LocalPlayer.UserId, CONFIG.badge)
+			end)
+			if ok and has then
+				badgeLabel:SetText("Badge: EARNED - return to hub to claim")
+			elseif ok then
+				badgeLabel:SetText("Badge: not yet")
+			else
+				badgeLabel:SetText("Badge: check failed")
+			end
+		end)
+	end
+
+	local function threshold()
+		return workspace:GetAttribute("KOBadgeThreshold")
+	end
+
+	local function updateKOs()
+		local need = threshold()
+		local total = totalKOs()
+		if not need then
+			needLabel:SetText("KO requirement not set yet.")
+			koLabel:SetText("KOs: " .. total)
+			return
+		end
+		needLabel:SetText("Need " .. need .. " KOs for the badge.")
+		koLabel:SetText("KOs: " .. math.min(total, need) .. "/" .. need)
+		if total >= need then
+			updateBadge()
+		end
+	end
+
+	conns[#conns + 1] = workspace:GetAttributeChangedSignal("KOBadgeThreshold"):Connect(updateKOs)
+
+	task.spawn(function()
+		local ls = LocalPlayer:WaitForChild("leaderstats", 30)
+		local kos = ls and ls:WaitForChild("KOs", 30)
+		if kos then
+			conns[#conns + 1] = kos.Changed:Connect(updateKOs)
+			conns[#conns + 1] = kos:GetAttributeChangedSignal("savedKOs"):Connect(updateKOs)
+			conns[#conns + 1] = kos:GetAttributeChangedSignal("badgeAwarded"):Connect(updateBadge)
+		end
+		updateKOs()
+	end)
+	updateBadge()
+
+	G.BB_CLEANUP = function()
+		for _, c in conns do
+			pcall(function()
+				c:Disconnect()
+			end)
+		end
+		table.clear(conns)
+		for p in espEntries do
+			removeEsp(p)
+		end
+	end
+end
+
+local function runNDS()
+	local Players = game:GetService("Players")
+	local TeleportService = game:GetService("TeleportService")
+	local BadgeService = game:GetService("BadgeService")
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+	local LocalPlayer = Players.LocalPlayer
+	local G = getgenv()
+	local BADGE = 1950450904039809
+
+	if G.NDS_CLEANUP then
+		pcall(G.NDS_CLEANUP)
+		G.NDS_CLEANUP = nil
+	end
+	if G.NDS_LIB then
+		pcall(function()
+			G.NDS_LIB:Unload()
+		end)
+		G.NDS_LIB = nil
+	end
+
+	local required = 3
+	pcall(function()
+		required = require(ReplicatedStorage.Modules.RescueEventConfig).RequiredAnimals or 3
+	end)
+
+	local conns = {}
+	local espEntries = {}
+	local alive = true
+
+	if not G.MSESP then
+		local ok, lib = pcall(function()
+			getgenv().mstudio45_ESP = nil
+			local src = game:HttpGet("https://raw.githubusercontent.com/mstudio45/MSESP/main/source.luau")
+			src = src:gsub("CoreGuiAllowed = successCoreGui and CoreGui ~= nil;", "CoreGuiAllowed = false;")
+			return loadstring(src)()
+		end)
+		if ok then
+			G.MSESP = lib
+		end
+	end
+	local ESP = G.MSESP
+	if ESP then
+		ESP.GlobalConfig.Boxes2D = false
+		ESP.GlobalConfig.Boxes3D = false
+		ESP.GlobalConfig.Skeleton = false
+		ESP.GlobalConfig.Arrows = false
+		ESP.GlobalConfig.Tracers = false
+		ESP.GlobalConfig.Rainbow = false
+		ESP.GlobalConfig.Highlighters = true
+		ESP.GlobalConfig.Billboards = true
+		ESP.GlobalConfig.Distance = true
+	end
+
+	local NPCs = workspace:WaitForChild("NPCs", 30)
+
+	local function myChar()
+		return LocalPlayer.Character
+	end
+
+	local function rootOf(m)
+		return m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart")
+	end
+
+	local function holderOf(m)
+		for _, w in m:GetDescendants() do
+			if w.Name == "RescueEventCarryWeld" and (w:IsA("Weld") or w:IsA("WeldConstraint")) then
+				for _, p in { w.Part0, w.Part1 } do
+					if p and not p:IsDescendantOf(m) then
+						local char = p:FindFirstAncestorOfClass("Model")
+						return Players:GetPlayerFromCharacter(char) or char
+					end
+				end
+			end
+		end
+		return nil
+	end
+
+	local function isAnimal(m)
+		return m:IsA("Model") and m:GetAttribute("AnimalType") ~= nil
+	end
+
+	local function touchPart(m)
+		local t = m:FindFirstChildWhichIsA("TouchTransmitter", true)
+		return t and t.Parent
+	end
+
+	local function carrying()
+		if not NPCs then
+			return nil
+		end
+		for _, m in NPCs:GetChildren() do
+			if isAnimal(m) and holderOf(m) == LocalPlayer then
+				return m
+			end
+		end
+		return nil
+	end
+
+	local function freeAnimals()
+		local out = {}
+		if not NPCs then
+			return out
+		end
+		for _, m in NPCs:GetChildren() do
+			if isAnimal(m) and not holderOf(m) and touchPart(m) and rootOf(m) then
+				out[#out + 1] = m
+			end
+		end
+		return out
+	end
+
+	local function penHitbox()
+		local world = workspace:FindFirstChild("RescueEventWorld")
+		local pen = world and world:FindFirstChild("LobbyPen")
+		return pen and pen:FindFirstChild("Hitbox")
+	end
+
+	local function count()
+		return LocalPlayer:GetAttribute("RescueEvent_AnimalCount") or 0
+	end
+
+	local function done()
+		return LocalPlayer:GetAttribute("RescueEvent_MainComplete") == true or count() >= required
+	end
+
+	local Library =
+		loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua"))()
+	G.NDS_LIB = Library
+
+	local Window = Library:CreateWindow({
+		Title = "Turbo Hub: NDS Rescue",
+		Footer = "Natural Disaster Survival - island 6 | Turbo Hub",
+		Center = true,
+		AutoShow = true,
+		Size = UDim2.fromOffset(600, 320),
+	})
+
+	-- Premium Glassmorphism Theme (Lucky Swaps Inspired)
+	pcall(function()
+		Library.Theme.BackgroundColor = Color3.fromRGB(11, 13, 20)
+		Library.Theme.MainColor = Color3.fromRGB(21, 24, 34)
+		Library.Theme.AccentColor = Color3.fromRGB(58, 117, 255)
+		Library.Theme.OutlineColor = Color3.fromRGB(38, 44, 58)
+		Library.Theme.FontColor = Color3.fromRGB(245, 245, 255)
+		Library.Font = Enum.Font.GothamMedium
+		Library:UpdateTheme()
+	end)
+
+	-- Apply Advanced UI Shaping (Rounded Corners, Glass Blur, Soft Shadows)
+	task.spawn(function()
+		task.wait(0.5)
+		pcall(function()
+			local core = game:GetService("CoreGui")
+			for _, screen in ipairs(core:GetChildren()) do
+				if screen:IsA("ScreenGui") and screen:FindFirstChild("Main") then
+					local main = screen.Main
+					if main:FindFirstChild("TopBar") and main.TopBar:FindFirstChild("Title") and string.find(main.TopBar.Title.Text, "Turbo Hub") then
+						-- Main Floating App Panel
+						main.BackgroundColor3 = Color3.fromRGB(11, 13, 20)
+						main.BackgroundTransparency = 0.15
+						
+						local mainCorner = main:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
+						mainCorner.CornerRadius = UDim.new(0, 16)
+						mainCorner.Parent = main
+						
+						for _, obj in ipairs(main:GetDescendants()) do
+							-- Dashboard Content Panels / Cards
+							if obj:IsA("Frame") and (obj.Name == "Groupbox" or obj.Name == "Left" or obj.Name == "Right" or obj.Name == "Container") then
+								obj.BackgroundColor3 = Color3.fromRGB(21, 24, 34)
+								obj.BackgroundTransparency = 0.25
+								
+								local corner = obj:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
+								corner.CornerRadius = UDim.new(0, 14)
+								corner.Parent = obj
+								
+								local stroke = obj:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
+								stroke.Color = Color3.fromRGB(45, 52, 70)
+								stroke.Thickness = 1
+								stroke.Transparency = 0.6
+								stroke.Parent = obj
+							end
+							
+							-- Buttons
+							if obj:IsA("TextButton") then
+								obj.BackgroundColor3 = Color3.fromRGB(28, 32, 45)
+								obj.BackgroundTransparency = 0.1
+								
+								local corner = obj:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
+								corner.CornerRadius = UDim.new(0, 8)
+								corner.Parent = obj
+								
+								local stroke = obj:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
+								stroke.Color = Color3.fromRGB(58, 117, 255)
+								stroke.Thickness = 1
+								stroke.Transparency = 0.7
+								stroke.Parent = obj
+							end
+							
+							-- Fonts and Readability
+							if obj:IsA("TextLabel") or obj:IsA("TextBox") then
+								obj.Font = Enum.Font.GothamMedium
+							end
+							
+							-- Remove rigid solid borders from the original layout
+							if obj:IsA("Frame") and (obj.Size == UDim2.new(1, 0, 0, 1) or obj.Size == UDim2.new(0, 1, 1, 0)) then
+								if obj.BackgroundColor3.R < 0.3 then -- target dark outlines
+									obj.BackgroundTransparency = 1 
+								end
+							end
+						end
+					end
+				end
+			end
+		end)
+	end)
+
+	local Tab = Window:AddTab("Main")
+	addChangelogTab(Window)
+	local box = Tab:AddLeftGroupbox("Animal Rescue")
+	local countLabel = box:AddLabel("Rescued: -", true)
+	local stateLabel = box:AddLabel("Status: idle", true)
+	local badgeLabel = box:AddLabel("Badge: checking...", true)
+	box:AddDivider()
+
+	local function setState(s)
+		stateLabel:SetText("Status: " .. s)
+	end
+
+	local function updateBadge()
+		task.spawn(function()
+			local ok, has = pcall(function()
+				return BadgeService:UserHasBadgeAsync(LocalPlayer.UserId, BADGE)
+			end)
+			if ok and has then
+				badgeLabel:SetText("Badge: EARNED - return to hub to claim")
+			elseif ok then
+				badgeLabel:SetText("Badge: not yet")
+			else
+				badgeLabel:SetText("Badge: check failed")
+			end
+		end)
+	end
+
+	local function updateCount()
+		countLabel:SetText("Rescued: " .. math.min(count(), required) .. "/" .. required)
+		if done() then
+			updateBadge()
+		end
+	end
+
+	conns[#conns + 1] = LocalPlayer:GetAttributeChangedSignal("RescueEvent_AnimalCount"):Connect(updateCount)
+	conns[#conns + 1] = LocalPlayer:GetAttributeChangedSignal("RescueEvent_MainComplete"):Connect(updateCount)
+	updateCount()
+	updateBadge()
+
+	local function tp(cf)
+		local char = myChar()
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if hrp then
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			hrp.CFrame = cf
+		end
+		return hrp
+	end
+
+	local function tryPickup(m)
+		local part = touchPart(m)
+		local root = rootOf(m)
+		if not part or not root then
+			return false
+		end
+		local hrp = tp(root.CFrame + Vector3.new(0, 2.5, 0))
+		if not hrp then
+			return false
+		end
+		pcall(firetouchinterest, hrp, part, 0)
+		task.wait(0.05)
+		pcall(firetouchinterest, hrp, part, 1)
+		local t0 = os.clock()
+		repeat
+			task.wait(0.1)
+		until carrying() or (holderOf(m) and holderOf(m) ~= LocalPlayer) or not m.Parent or os.clock() - t0 > 2
+		return carrying() ~= nil
+	end
+
+	local function tryDeposit()
+		local hit = penHitbox()
+		if not hit then
+			return false
+		end
+		local before = count()
+		local hrp = tp(hit.CFrame + Vector3.new(0, 3, 0))
+		if not hrp then
+			return false
+		end
+		local t0 = os.clock()
+		repeat
+			if hit:FindFirstChildWhichIsA("TouchTransmitter") then
+				pcall(firetouchinterest, hrp, hit, 0)
+				task.wait(0.05)
+				pcall(firetouchinterest, hrp, hit, 1)
+			end
+			task.wait(0.25)
+			tp(hit.CFrame + Vector3.new(0, 3, 0))
+		until count() > before or not carrying() or os.clock() - t0 > 3
+		return count() > before
+	end
+
+	local roundOver = true
+	local roundOverAt = 0
+	local failedAt = setmetatable({}, { __mode = "k" })
+	local roundRemote = ReplicatedStorage:FindFirstChild("Remotes")
+		and ReplicatedStorage.Remotes:FindFirstChild("Round")
+	if roundRemote then
+		conns[#conns + 1] = roundRemote.OnClientEvent:Connect(function(kind)
+			if kind == "Display Survivors" then
+				roundOver = true
+				roundOverAt = os.clock()
+			elseif kind == "Warn Disaster" then
+				roundOver = false
+			end
+		end)
+	end
+
+	local function rescueStep()
+		if done() then
+			setState("complete")
+			return
+		end
+		local held = carrying()
+		if held then
+			local hit = penHitbox()
+			local me = myChar() and myChar():FindFirstChild("HumanoidRootPart")
+			if hit and me and (me.Position - hit.Position).Magnitude > 20 then
+				tp(hit.CFrame + Vector3.new(0, 3, 0))
+			end
+			if not roundOver then
+				setState("carrying " .. held.Name .. " - waiting in lobby for round end")
+				return
+			end
+			if os.clock() - roundOverAt < 3 then
+				setState("round over - letting lobby respawn settle")
+				return
+			end
+			setState("round over - depositing " .. held.Name)
+			if tryDeposit() then
+				setState("deposited")
+			elseif os.clock() - roundOverAt > 25 then
+				roundOver = false
+			end
+			return
+		end
+		local list = freeAnimals()
+		if #list == 0 then
+			setState("no free animals - waiting for round")
+			return
+		end
+		local char = myChar()
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if hrp then
+			table.sort(list, function(a, b)
+				return (rootOf(a).Position - hrp.Position).Magnitude < (rootOf(b).Position - hrp.Position).Magnitude
+			end)
+		end
+		local target
+		for _, m in list do
+			if (failedAt[m] or 0) < os.clock() - 10 then
+				target = m
+				break
+			end
+		end
+		if not target then
+			setState("free animals unreachable - retrying soon")
+			return
+		end
+		setState("grabbing " .. target.Name)
+		if tryPickup(target) then
+			setState("picked up " .. (carrying() or target).Name)
+			roundOver = false
+		else
+			failedAt[target] = os.clock()
+			setState("pickup failed on " .. target.Name)
+		end
+	end
+
+	box:AddToggle("AutoRescue", {
+		Text = "Auto rescue animals",
+		Default = false,
+	})
+
+	task.spawn(function()
+		while alive do
+			if Library.Toggles.AutoRescue and Library.Toggles.AutoRescue.Value then
+				local ok, err = pcall(rescueStep)
+				if not ok then
+					setState("error: " .. tostring(err))
+				end
+			end
+			task.wait(0.5)
+		end
+	end)
+
+	local returning = false
+	conns[#conns + 1] = TeleportService.TeleportInitFailed:Connect(function(player, _, msg)
+		if player ~= LocalPlayer then
+			return
+		end
+		returning = false
+		if tostring(msg):find("different creator") or tostring(msg):find("Unauthorized") then
+			Library:Notify("This game blocks teleports to the hub. Leave and join The Hunt from Roblox.", 8)
+		else
+			Library:Notify("Hub teleport failed: " .. tostring(msg), 6)
+		end
+	end)
+	box:AddButton({
+		Text = "Return to hub",
+		Func = function()
+			if returning then
+				return
+			end
+			returning = true
+			local ok, err = pcall(function()
+				TeleportService:Teleport(HUB_PLACE, LocalPlayer)
+			end)
+			if not ok then
+				returning = false
+				Library:Notify("Hub teleport failed: " .. tostring(err), 5)
+			end
+		end,
+	})
+
+	local function removeEsp(m)
+		local e = espEntries[m]
+		if e then
+			pcall(function()
+				e.entry:Destroy()
+			end)
+			espEntries[m] = nil
+		end
+	end
+
+	local function espWanted(m)
+		local h = holderOf(m)
+		if h == LocalPlayer then
+			return "mine"
+		elseif h then
+			return "held"
+		end
+		return "free"
+	end
+
+	local COLORS = {
+		free = Color3.fromRGB(80, 255, 120),
+		held = Color3.fromRGB(255, 80, 80),
+		mine = Color3.fromRGB(80, 170, 255),
+	}
+
+	local function refreshEsp(m)
+		if not ESP or not (Library.Toggles.AnimalESP and Library.Toggles.AnimalESP.Value) then
+			removeEsp(m)
+			return
+		end
+		if not m.Parent or not isAnimal(m) then
+			removeEsp(m)
+			return
+		end
+		local state = espWanted(m)
+		local cur = espEntries[m]
+		if cur and cur.state == state then
+			return
+		end
+		removeEsp(m)
+		local h = holderOf(m)
+		local label = m.Name
+		if state == "held" then
+			label = m.Name
+				.. " [held"
+				.. (typeof(h) == "Instance" and h:IsA("Player") and (": " .. h.DisplayName) or "")
+				.. "]"
+		elseif state == "mine" then
+			label = m.Name .. " [carrying]"
+		end
+		local ok, e = pcall(function()
+			return ESP:Add({
+				Model = m,
+				Name = label,
+				Color = COLORS[state],
+				ESPType = "Highlight",
+				FillTransparency = 0.6,
+				OutlineTransparency = 0,
+				MaxDistance = 5000,
+			})
+		end)
+		if ok and e then
+			espEntries[m] = { entry = e, state = state }
+		end
+	end
+
+	local function refreshAll()
+		if not NPCs then
+			return
+		end
+		for m in espEntries do
+			if not m.Parent then
+				removeEsp(m)
+			end
+		end
+		for _, m in NPCs:GetChildren() do
+			refreshEsp(m)
+		end
+	end
+
+	local espBox = Tab:AddRightGroupbox("ESP")
+	espBox:AddToggle("AnimalESP", {
+		Text = "Animal ESP",
+		Default = true,
+		Callback = function()
+			for m in espEntries do
+				removeEsp(m)
+			end
+			refreshAll()
+		end,
+	})
+	espBox:AddLabel("Green = free, red = held by someone, blue = yours", true)
+
+	local function watchAnimal(m)
+		if not isAnimal(m) then
+			return
+		end
+		conns[#conns + 1] = m.DescendantAdded:Connect(function(d)
+			if d.Name == "RescueEventCarryWeld" then
+				task.defer(refreshEsp, m)
+			end
+		end)
+		conns[#conns + 1] = m.DescendantRemoving:Connect(function(d)
+			if d.Name == "RescueEventCarryWeld" then
+				task.defer(refreshEsp, m)
+			end
+		end)
+		refreshEsp(m)
+	end
+
+	if NPCs then
+		for _, m in NPCs:GetChildren() do
+			watchAnimal(m)
+		end
+		conns[#conns + 1] = NPCs.ChildAdded:Connect(function(m)
+			task.wait(0.3)
+			watchAnimal(m)
+		end)
+		conns[#conns + 1] = NPCs.ChildRemoved:Connect(removeEsp)
+	end
+
+	G.NDS_CLEANUP = function()
+		alive = false
+		for _, c in conns do
+			pcall(function()
+				c:Disconnect()
+			end)
+		end
+		table.clear(conns)
+		for m in espEntries do
+			removeEsp(m)
+		end
+	end
+	Library:OnUnload(function()
+		if G.NDS_CLEANUP then
+			G.NDS_CLEANUP()
+			G.NDS_CLEANUP = nil
+		end
+	end)
+end
+
+local ok, err = pcall(function()
+	if game.PlaceId == HUB_PLACE then
+		runHub()
+	elseif game.PlaceId == HEIGHTS_PLACE then
+		runHeights()
+	elseif BRICKBATTLE_PLACES[game.PlaceId] then
+		runBrickBattle()
+	elseif game.PlaceId == NDS_PLACE then
+		runNDS()
+	end
+end)
+if not ok then
+	warn("[Hunt20] " .. tostring(err))
+end
